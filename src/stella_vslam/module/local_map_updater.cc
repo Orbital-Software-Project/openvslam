@@ -22,9 +22,9 @@ std::shared_ptr<data::keyframe> local_map_updater::get_nearest_covisibility() co
     return nearest_covisibility_;
 }
 
-bool local_map_updater::acquire_local_map(std::unordered_set<unsigned int>& outlier_ids) {
+bool local_map_updater::acquire_local_map() {
     const auto local_keyfrms_was_found = find_local_keyframes();
-    const auto local_lms_was_found = find_local_landmarks(outlier_ids);
+    const auto local_lms_was_found = find_local_landmarks();
     return local_keyfrms_was_found && local_lms_was_found;
 }
 
@@ -48,6 +48,9 @@ local_map_updater::keyframe_weights_t local_map_updater::count_keyframe_weights(
     for (unsigned int idx = 0; idx < num_keypts_; ++idx) {
         auto& lm = frm_lms_.at(idx);
         if (!lm) {
+            continue;
+        }
+        if (lm->will_be_erased()) {
             continue;
         }
         const auto observations = lm->get_observations();
@@ -141,7 +144,7 @@ auto local_map_updater::find_second_local_keyframes(const std::vector<std::share
     return second_local_keyfrms;
 }
 
-bool local_map_updater::find_local_landmarks(std::unordered_set<unsigned int>& outlier_ids) {
+bool local_map_updater::find_local_landmarks() {
     local_lms_.clear();
     local_lms_.reserve(50 * local_keyfrms_.size());
 
@@ -157,9 +160,6 @@ bool local_map_updater::find_local_landmarks(std::unordered_set<unsigned int>& o
                 continue;
             }
 
-            if (outlier_ids.count(lm->id_)) {
-                continue;
-            }
             // avoid duplication
             if (already_found_ids.count(lm->id_)) {
                 continue;

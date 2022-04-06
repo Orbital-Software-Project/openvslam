@@ -15,7 +15,7 @@ namespace module {
 frame_tracker::frame_tracker(camera::base* camera, const unsigned int num_matches_thr)
     : camera_(camera), num_matches_thr_(num_matches_thr), pose_optimizer_() {}
 
-bool frame_tracker::motion_based_track(data::frame& curr_frm, const data::frame& last_frm, const Mat44_t& velocity, std::unordered_set<unsigned int>& outlier_ids) const {
+bool frame_tracker::motion_based_track(data::frame& curr_frm, const data::frame& last_frm, const Mat44_t& velocity) const {
     match::projection projection_matcher(0.9, true);
 
     // Set the initial pose by using the motion model
@@ -40,10 +40,13 @@ bool frame_tracker::motion_based_track(data::frame& curr_frm, const data::frame&
     }
 
     // Pose optimization
-    pose_optimizer_.optimize(curr_frm);
+    g2o::SE3Quat optimized_pose;
+    std::vector<bool> outlier_flags;
+    pose_optimizer_.optimize(curr_frm, optimized_pose, outlier_flags);
+    curr_frm.set_cam_pose(optimized_pose);
 
     // Discard the outliers
-    const auto num_valid_matches = discard_outliers(curr_frm, outlier_ids);
+    const auto num_valid_matches = discard_outliers(outlier_flags, curr_frm);
 
     if (num_valid_matches < num_matches_thr_) {
         spdlog::debug("motion based tracking failed: {} inlier matches < {}", num_valid_matches, num_matches_thr_);
@@ -54,8 +57,7 @@ bool frame_tracker::motion_based_track(data::frame& curr_frm, const data::frame&
     }
 }
 
-bool frame_tracker::bow_match_based_track(data::frame& curr_frm, const data::frame& last_frm, const std::shared_ptr<data::keyframe>& ref_keyfrm,
-                                          std::unordered_set<unsigned int>& outlier_ids) const {
+bool frame_tracker::bow_match_based_track(data::frame& curr_frm, const data::frame& last_frm, const std::shared_ptr<data::keyframe>& ref_keyfrm) const {
     match::bow_tree bow_matcher(0.7, true);
 
     // Search 2D-2D matches between the ref keyframes and the current frame
@@ -74,10 +76,13 @@ bool frame_tracker::bow_match_based_track(data::frame& curr_frm, const data::fra
     // Pose optimization
     // The initial value is the pose of the previous frame
     curr_frm.set_cam_pose(last_frm.cam_pose_cw_);
-    pose_optimizer_.optimize(curr_frm);
+    g2o::SE3Quat optimized_pose;
+    std::vector<bool> outlier_flags;
+    pose_optimizer_.optimize(curr_frm, optimized_pose, outlier_flags);
+    curr_frm.set_cam_pose(optimized_pose);
 
     // Discard the outliers
-    const auto num_valid_matches = discard_outliers(curr_frm, outlier_ids);
+    const auto num_valid_matches = discard_outliers(outlier_flags, curr_frm);
 
     if (num_valid_matches < num_matches_thr_) {
         spdlog::debug("bow match based tracking failed: {} inlier matches < {}", num_valid_matches, num_matches_thr_);
@@ -88,8 +93,7 @@ bool frame_tracker::bow_match_based_track(data::frame& curr_frm, const data::fra
     }
 }
 
-bool frame_tracker::robust_match_based_track(data::frame& curr_frm, const data::frame& last_frm, const std::shared_ptr<data::keyframe>& ref_keyfrm,
-                                             std::unordered_set<unsigned int>& outlier_ids) const {
+bool frame_tracker::robust_match_based_track(data::frame& curr_frm, const data::frame& last_frm, const std::shared_ptr<data::keyframe>& ref_keyfrm) const {
     match::robust robust_matcher(0.8, false);
 
     // Search 2D-2D matches between the ref keyframes and the current frame
@@ -108,10 +112,13 @@ bool frame_tracker::robust_match_based_track(data::frame& curr_frm, const data::
     // Pose optimization
     // The initial value is the pose of the previous frame
     curr_frm.set_cam_pose(last_frm.cam_pose_cw_);
-    pose_optimizer_.optimize(curr_frm);
+    g2o::SE3Quat optimized_pose;
+    std::vector<bool> outlier_flags;
+    pose_optimizer_.optimize(curr_frm, optimized_pose, outlier_flags);
+    curr_frm.set_cam_pose(optimized_pose);
 
     // Discard the outliers
-    const auto num_valid_matches = discard_outliers(curr_frm, outlier_ids);
+    const auto num_valid_matches = discard_outliers(outlier_flags, curr_frm);
 
     if (num_valid_matches < num_matches_thr_) {
         spdlog::debug("robust match based tracking failed: {} inlier matches < {}", num_valid_matches, num_matches_thr_);
@@ -122,24 +129,16 @@ bool frame_tracker::robust_match_based_track(data::frame& curr_frm, const data::
     }
 }
 
-unsigned int frame_tracker::discard_outliers(data::frame& curr_frm, std::unordered_set<unsigned int>& outlier_ids) const {
+unsigned int frame_tracker::discard_outliers(const std::vector<bool>& outlier_flags, data::frame& curr_frm) const {
     unsigned int num_valid_matches = 0;
 
     for (unsigned int idx = 0; idx < curr_frm.frm_obs_.num_keypts_; ++idx) {
-        if (!curr_frm.landmarks_.at(idx)) {
-            continue;
+        if (outlier_flags.at(idx)) {
+            curr_frm.landmarks_.at(idx) = nullptr;
         }
-
-        auto& lm = curr_frm.landmarks_.at(idx);
-
-        if (curr_frm.outlier_flags_.at(idx)) {
-            curr_frm.outlier_flags_.at(idx) = false;
-            outlier_ids.insert(lm->id_);
-            lm = nullptr;
-            continue;
+        else {
+            ++num_valid_matches;
         }
-
-        ++num_valid_matches;
     }
 
     return num_valid_matches;

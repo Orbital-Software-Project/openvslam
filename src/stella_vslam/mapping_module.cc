@@ -17,7 +17,7 @@
 namespace stella_vslam {
 
 mapping_module::mapping_module(const YAML::Node& yaml_node, data::map_database* map_db, data::bow_database* bow_db, data::bow_vocabulary* bow_vocab)
-    : local_map_cleaner_(new module::local_map_cleaner(map_db, bow_db, yaml_node["redundant_obs_ratio_thr"].as<double>(0.9))),
+    : local_map_cleaner_(new module::local_map_cleaner(yaml_node, map_db, bow_db)),
       map_db_(map_db), bow_db_(bow_db), bow_vocab_(bow_vocab),
       local_bundle_adjuster_(new optimize::local_bundle_adjuster()) {
     spdlog::debug("CONSTRUCT: mapping_module");
@@ -160,7 +160,7 @@ void mapping_module::mapping_with_new_keyframe() {
     store_new_keyframe();
 
     // remove redundant landmarks
-    local_map_cleaner_->remove_redundant_landmarks(cur_keyfrm_->id_, cur_keyfrm_->depth_is_available());
+    local_map_cleaner_->remove_redundant_landmarks(cur_keyfrm_->id_);
 
     // triangulate new landmarks between the current frame and each of the covisibilities
     create_new_landmarks();
@@ -306,7 +306,7 @@ void mapping_module::triangulate_with_two_keyframes(const std::shared_ptr<data::
         // succeeded
 
         // create a landmark object
-        auto lm = std::make_shared<data::landmark>(pos_w, keyfrm_1, map_db_);
+        auto lm = std::make_shared<data::landmark>(pos_w, keyfrm_1);
 
         lm->add_observation(keyfrm_1, idx_1);
         lm->add_observation(keyfrm_2, idx_2);
@@ -400,7 +400,7 @@ void mapping_module::fuse_landmark_duplication(const std::unordered_set<std::sha
         // then, add matches and solve duplication
         auto cur_landmarks = cur_keyfrm_->get_landmarks();
         for (const auto& fuse_tgt_keyfrm : fuse_tgt_keyfrms) {
-            matcher.replace_duplication(fuse_tgt_keyfrm, cur_landmarks);
+            matcher.replace_duplication(map_db_, fuse_tgt_keyfrm, cur_landmarks);
         }
     }
 
@@ -430,7 +430,7 @@ void mapping_module::fuse_landmark_duplication(const std::unordered_set<std::sha
             }
         }
 
-        matcher.replace_duplication(cur_keyfrm_, candidate_landmarks_to_fuse);
+        matcher.replace_duplication(map_db_, cur_keyfrm_, candidate_landmarks_to_fuse);
     }
 }
 

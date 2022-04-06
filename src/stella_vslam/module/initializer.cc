@@ -221,7 +221,7 @@ bool initializer::create_map_for_monocular(data::bow_vocabulary* bow_vocab, data
         }
 
         // construct a landmark
-        auto lm = std::make_shared<data::landmark>(init_triangulated_pts.at(init_idx), curr_keyfrm, map_db_);
+        auto lm = std::make_shared<data::landmark>(init_triangulated_pts.at(init_idx), curr_keyfrm);
 
         // set the assocications to the new keyframes
         init_keyfrm->add_landmark(lm, init_idx);
@@ -236,7 +236,6 @@ bool initializer::create_map_for_monocular(data::bow_vocabulary* bow_vocab, data
 
         // set the 2D-3D assocications to the current frame
         curr_frm.landmarks_.at(curr_idx) = lm;
-        curr_frm.outlier_flags_.at(curr_idx) = false;
 
         // add the landmark to the map DB
         map_db_->add_landmark(lm);
@@ -348,7 +347,7 @@ bool initializer::create_map_for_stereo(data::bow_vocabulary* bow_vocab, data::f
 
         // build a landmark
         const Vec3_t pos_w = curr_frm.triangulate_stereo(idx);
-        auto lm = std::make_shared<data::landmark>(pos_w, curr_keyfrm, map_db_);
+        auto lm = std::make_shared<data::landmark>(pos_w, curr_keyfrm);
 
         // set the associations to the new keyframe
         lm->add_observation(curr_keyfrm, idx);
@@ -361,7 +360,6 @@ bool initializer::create_map_for_stereo(data::bow_vocabulary* bow_vocab, data::f
 
         // set the 2D-3D associations to the current frame
         curr_frm.landmarks_.at(idx) = lm;
-        curr_frm.outlier_flags_.at(idx) = false;
 
         // add the landmark to the map DB
         map_db_->add_landmark(lm);

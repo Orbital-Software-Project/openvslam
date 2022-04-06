@@ -180,7 +180,7 @@ std::shared_ptr<Mat44_t> tracking_module::feed_frame(data::frame curr_frm) {
         spdlog::info("tracking lost: frame {}", curr_frm_.id_);
         // if tracking is failed within 5.0 sec after initialization, reset the system
         constexpr float init_retry_thr = 5.0;
-        if (curr_frm_.timestamp_ - initializer_.get_initial_frame_timestamp() < init_retry_thr) {
+        if (mapping_is_enabled_ && curr_frm_.timestamp_ - initializer_.get_initial_frame_timestamp() < init_retry_thr) {
             spdlog::info("tracking lost within {} sec after initialization", init_retry_thr);
             reset();
             return nullptr;
@@ -215,13 +215,12 @@ bool tracking_module::track(bool relocalization_is_needed) {
     curr_frm_.ref_keyfrm_ = last_frm_.ref_keyfrm_;
 
     bool succeeded = false;
-    std::unordered_set<unsigned int> outlier_ids;
     if (relocalize_by_pose_is_requested()) {
         // Force relocalization by pose
         succeeded = relocalize_by_pose(get_relocalize_by_pose_request());
     }
     else if (!relocalization_is_needed) {
-        succeeded = track_current_frame(outlier_ids);
+        succeeded = track_current_frame();
     }
     else if (enable_auto_relocalization_) {
         // Compute the BoW representations to perform relocalization
@@ -236,11 +235,13 @@ bool tracking_module::track(bool relocalization_is_needed) {
         }
     }
 
-    // update the local map and optimize the camera pose of the current frame
+    // update the local map and optimize the camera pose of the current frames_thr);
+    const unsigned int min_num_obs_thr = (3 <= map_db_->get_num_keyframes()) ? 3 : 2;
     unsigned int num_tracked_lms = 0;
+    unsigned int num_reliable_lms = 0;
     if (succeeded) {
-        update_local_map(outlier_ids);
-        succeeded = optimize_current_frame_with_local_map(num_tracked_lms, outlier_ids);
+        update_local_map();
+        succeeded = optimize_current_frame_with_local_map(num_tracked_lms, num_reliable_lms, min_num_obs_thr);
     }
 
     // update the motion model
@@ -249,15 +250,8 @@ bool tracking_module::track(bool relocalization_is_needed) {
     }
 
     // check to insert the new keyframe derived from the current frame
-    if (succeeded && new_keyframe_is_needed(num_tracked_lms)) {
+    if (succeeded && new_keyframe_is_needed(num_tracked_lms, num_reliable_lms, min_num_obs_thr)) {
         insert_new_keyframe();
-    }
-
-    // tidy up observations
-    for (unsigned int idx = 0; idx < curr_frm_.frm_obs_.num_keypts_; ++idx) {
-        if (curr_frm_.landmarks_.at(idx) && curr_frm_.outlier_flags_.at(idx)) {
-            curr_frm_.landmarks_.at(idx) = nullptr;
-        }
     }
 
     // update the frame statistics
@@ -294,23 +288,23 @@ bool tracking_module::initialize() {
     return true;
 }
 
-bool tracking_module::track_current_frame(std::unordered_set<unsigned int>& outlier_ids) {
+bool tracking_module::track_current_frame() {
     bool succeeded = false;
 
     // Tracking mode
     if (twist_is_valid_ && last_reloc_frm_id_ + 2 < curr_frm_.id_) {
         // if the motion model is valid
-        succeeded = frame_tracker_.motion_based_track(curr_frm_, last_frm_, twist_, outlier_ids);
+        succeeded = frame_tracker_.motion_based_track(curr_frm_, last_frm_, twist_);
     }
     if (!succeeded) {
         // Compute the BoW representations to perform the BoW match
         if (!curr_frm_.bow_is_available()) {
             curr_frm_.compute_bow(bow_vocab_);
         }
-        succeeded = frame_tracker_.bow_match_based_track(curr_frm_, last_frm_, curr_frm_.ref_keyfrm_, outlier_ids);
+        succeeded = frame_tracker_.bow_match_based_track(curr_frm_, last_frm_, curr_frm_.ref_keyfrm_);
     }
     if (!succeeded) {
-        succeeded = frame_tracker_.robust_match_based_track(curr_frm_, last_frm_, curr_frm_.ref_keyfrm_, outlier_ids);
+        succeeded = frame_tracker_.robust_match_based_track(curr_frm_, last_frm_, curr_frm_.ref_keyfrm_);
     }
 
     return succeeded;
@@ -392,15 +386,28 @@ void tracking_module::update_last_frame() {
 }
 
 bool tracking_module::optimize_current_frame_with_local_map(unsigned int& num_tracked_lms,
-                                                            std::unordered_set<unsigned int>& outlier_ids) {
+                                                            unsigned int& num_reliable_lms,
+                                                            const unsigned int min_num_obs_thr) {
     // acquire more 2D-3D matches by reprojecting the local landmarks to the current frame
-    search_local_landmarks(outlier_ids);
+    search_local_landmarks();
 
     // optimize the pose
-    pose_optimizer_.optimize(curr_frm_);
+    g2o::SE3Quat optimized_pose;
+    std::vector<bool> outlier_flags;
+    pose_optimizer_.optimize(curr_frm_, optimized_pose, outlier_flags);
+    curr_frm_.set_cam_pose(optimized_pose);
+
+    // Reject outliers
+    for (unsigned int idx = 0; idx < curr_frm_.frm_obs_.num_keypts_; ++idx) {
+        if (!outlier_flags.at(idx)) {
+            continue;
+        }
+        curr_frm_.landmarks_.at(idx) = nullptr;
+    }
 
     // count up the number of tracked landmarks
     num_tracked_lms = 0;
+    num_reliable_lms = 0;
     for (unsigned int idx = 0; idx < curr_frm_.frm_obs_.num_keypts_; ++idx) {
         const auto& lm = curr_frm_.landmarks_.at(idx);
         if (!lm) {
@@ -410,19 +417,17 @@ bool tracking_module::optimize_current_frame_with_local_map(unsigned int& num_tr
             continue;
         }
 
-        if (!curr_frm_.outlier_flags_.at(idx)) {
-            // the observation has been considered as inlier in the pose optimization
-            assert(lm->has_observation());
-            // count up
-            ++num_tracked_lms;
-            // increment the number of tracked frame
-            lm->increase_num_observed();
+        // the observation has been considered as inlier in the pose optimization
+        assert(lm->has_observation());
+        // count up
+        if (0 < min_num_obs_thr) {
+            if (min_num_obs_thr <= lm->num_observations()) {
+                ++num_reliable_lms;
+            }
         }
-        else {
-            // the observation has been considered as outlier in the pose optimization
-            // remove the observation
-            curr_frm_.landmarks_.at(idx) = nullptr;
-        }
+        ++num_tracked_lms;
+        // increment the number of tracked frame
+        lm->increase_num_observed();
     }
 
     constexpr unsigned int num_tracked_lms_thr = 20;
@@ -442,7 +447,7 @@ bool tracking_module::optimize_current_frame_with_local_map(unsigned int& num_tr
     return true;
 }
 
-void tracking_module::update_local_map(std::unordered_set<unsigned int>& outlier_ids) {
+void tracking_module::update_local_map() {
     // clean landmark associations
     for (unsigned int idx = 0; idx < curr_frm_.frm_obs_.num_keypts_; ++idx) {
         const auto& lm = curr_frm_.landmarks_.at(idx);
@@ -458,7 +463,7 @@ void tracking_module::update_local_map(std::unordered_set<unsigned int>& outlier
     // acquire the current local map
     constexpr unsigned int max_num_local_keyfrms = 60;
     auto local_map_updater = module::local_map_updater(curr_frm_, max_num_local_keyfrms);
-    if (!local_map_updater.acquire_local_map(outlier_ids)) {
+    if (!local_map_updater.acquire_local_map()) {
         return;
     }
     // update the variables
@@ -474,7 +479,7 @@ void tracking_module::update_local_map(std::unordered_set<unsigned int>& outlier
     map_db_->set_local_landmarks(local_landmarks_);
 }
 
-void tracking_module::search_local_landmarks(std::unordered_set<unsigned int>& outlier_ids) {
+void tracking_module::search_local_landmarks() {
     // select the landmarks which can be reprojected from the ones observed in the current frame
     std::unordered_set<unsigned int> curr_landmark_ids;
     for (const auto& lm : curr_frm_.landmarks_) {
@@ -503,9 +508,6 @@ void tracking_module::search_local_landmarks(std::unordered_set<unsigned int>& o
     std::unordered_map<unsigned int, int> lm_to_scale;
     for (const auto& lm : local_landmarks_) {
         if (curr_landmark_ids.count(curr_frm_.id_)) {
-            continue;
-        }
-        if (outlier_ids.count(curr_frm_.id_)) {
             continue;
         }
         if (lm->will_be_erased()) {
@@ -539,7 +541,9 @@ void tracking_module::search_local_landmarks(std::unordered_set<unsigned int>& o
     projection_matcher.match_frame_and_landmarks(curr_frm_, local_landmarks_, lm_to_reproj, lm_to_x_right, lm_to_scale, margin);
 }
 
-bool tracking_module::new_keyframe_is_needed(unsigned int num_tracked_lms) const {
+bool tracking_module::new_keyframe_is_needed(unsigned int num_tracked_lms,
+                                             unsigned int num_reliable_lms,
+                                             const unsigned int min_num_obs_thr) const {
     if (!mapping_is_enabled_) {
         return false;
     }
@@ -550,7 +554,7 @@ bool tracking_module::new_keyframe_is_needed(unsigned int num_tracked_lms) const
     }
 
     // check the new keyframe is needed
-    return keyfrm_inserter_.new_keyframe_is_needed(map_db_, curr_frm_, num_tracked_lms, *curr_frm_.ref_keyfrm_);
+    return keyfrm_inserter_.new_keyframe_is_needed(map_db_, curr_frm_, num_tracked_lms, num_reliable_lms, *curr_frm_.ref_keyfrm_, min_num_obs_thr);
 }
 
 void tracking_module::insert_new_keyframe() {
