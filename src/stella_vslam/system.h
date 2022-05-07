@@ -11,7 +11,7 @@
 #include <atomic>
 #include <memory>
 
-#include <opencv2/core/core.hpp>
+#include <opencv2/core/mat.hpp>
 
 namespace stella_vslam {
 
@@ -262,6 +262,9 @@ private:
 
     //! mutex for flags of enable/disable loop detector
     mutable std::mutex mtx_loop_detector_;
+
+    //! Temporary variables for visualization
+    std::vector<cv::KeyPoint> keypts_;
 };
 
 } // namespace stella_vslam

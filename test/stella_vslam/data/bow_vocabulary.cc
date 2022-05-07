@@ -1,7 +1,8 @@
 #include "stella_vslam/feature/orb_extractor.h"
 #include "stella_vslam/data/bow_vocabulary.h"
 
-#include <opencv2/core.hpp>
+#include <opencv2/core/mat.hpp>
+#include <opencv2/core/types.hpp>
 #include <opencv2/features2d.hpp>
 #include <opencv2/highgui.hpp>
 
@@ -25,13 +26,8 @@ float get_score(data::bow_vocabulary* bow_vocab, const std::string& file1, const
     extractor.extract(img1, mask, keypts1, desc1);
     extractor.extract(img2, mask, keypts2, desc2);
 
-#ifdef USE_DBOW2
-    DBoW2::BowVector bow_vec_1, bow_vec_2;
-    DBoW2::FeatureVector bow_feat_vec_1, bow_feat_vec_2;
-#else
-    fbow::BoWVector bow_vec_1, bow_vec_2;
-    fbow::BoWFeatVector bow_feat_vec_1, bow_feat_vec_2;
-#endif
+    data::bow_vector bow_vec_1, bow_vec_2;
+    data::bow_feature_vector bow_feat_vec_1, bow_feat_vec_2;
 
 #ifdef USE_DBOW2
     bow_vocab->transform(util::converter::to_desc_vec(desc1), bow_vec_1, bow_feat_vec_1, 4);

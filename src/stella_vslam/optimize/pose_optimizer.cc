@@ -24,13 +24,13 @@ pose_optimizer::pose_optimizer(const unsigned int num_trials, const unsigned int
     : num_trials_(num_trials), num_each_iter_(num_each_iter) {}
 
 unsigned int pose_optimizer::optimize(const data::frame& frm, g2o::SE3Quat& optimized_pose, std::vector<bool>& outlier_flags) const {
-    auto num_valid_obs = optimize(frm.cam_pose_cw_, frm.frm_obs_, frm.orb_params_, frm.camera_,
+    auto num_valid_obs = optimize(frm.get_pose_cw(), frm.frm_obs_, frm.orb_params_, frm.camera_,
                                   frm.landmarks_, optimized_pose, outlier_flags);
     return num_valid_obs;
 }
 
 unsigned int pose_optimizer::optimize(const data::keyframe* keyfrm, g2o::SE3Quat& optimized_pose, std::vector<bool>& outlier_flags) const {
-    auto num_valid_obs = optimize(keyfrm->get_cam_pose(), keyfrm->frm_obs_, keyfrm->orb_params_, keyfrm->camera_,
+    auto num_valid_obs = optimize(keyfrm->get_pose_cw(), keyfrm->frm_obs_, keyfrm->orb_params_, keyfrm->camera_,
                                   keyfrm->get_landmarks(), optimized_pose, outlier_flags);
     return num_valid_obs;
 }
@@ -92,7 +92,7 @@ unsigned int pose_optimizer::optimize(const Mat44_t& cam_pose_cw, const data::fr
 
         // Connect the frame and the landmark vertices using the projection edges
         const auto& undist_keypt = frm_obs.undist_keypts_.at(idx);
-        const float x_right = frm_obs.stereo_x_right_.at(idx);
+        const float x_right = frm_obs.stereo_x_right_.empty() ? -1.0f : frm_obs.stereo_x_right_.at(idx);
         const float inv_sigma_sq = orb_params->inv_level_sigma_sq_.at(undist_keypt.octave);
         const auto sqrt_chi_sq = (camera->setup_type_ == camera::setup_type_t::Monocular)
                                      ? sqrt_chi_sq_2D

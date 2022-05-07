@@ -8,20 +8,20 @@ namespace module {
 two_view_triangulator::two_view_triangulator(const std::shared_ptr<data::keyframe>& keyfrm_1, const std::shared_ptr<data::keyframe>& keyfrm_2,
                                              const float rays_parallax_deg_thr)
     : keyfrm_1_(keyfrm_1), keyfrm_2_(keyfrm_2),
-      rot_1w_(keyfrm_1->get_rotation()), rot_w1_(rot_1w_.transpose()), trans_1w_(keyfrm_1->get_translation()),
-      cam_pose_1w_(keyfrm_1->get_cam_pose()), cam_center_1_(keyfrm_1->get_cam_center()), camera_1_(keyfrm_1->camera_),
-      rot_2w_(keyfrm_2->get_rotation()), rot_w2_(rot_2w_.transpose()), trans_2w_(keyfrm_2->get_translation()),
-      cam_pose_2w_(keyfrm_2->get_cam_pose()), cam_center_2_(keyfrm_2->get_cam_center()), camera_2_(keyfrm_2->camera_),
+      rot_1w_(keyfrm_1->get_rot_cw()), rot_w1_(rot_1w_.transpose()), trans_1w_(keyfrm_1->get_trans_cw()),
+      cam_pose_1w_(keyfrm_1->get_pose_cw()), cam_center_1_(keyfrm_1->get_trans_wc()), camera_1_(keyfrm_1->camera_),
+      rot_2w_(keyfrm_2->get_rot_cw()), rot_w2_(rot_2w_.transpose()), trans_2w_(keyfrm_2->get_trans_cw()),
+      cam_pose_2w_(keyfrm_2->get_pose_cw()), cam_center_2_(keyfrm_2->get_trans_wc()), camera_2_(keyfrm_2->camera_),
       ratio_factor_(2.0f * std::max(keyfrm_1->orb_params_->scale_factor_, keyfrm_2->orb_params_->scale_factor_)),
       cos_rays_parallax_thr_(std::cos(rays_parallax_deg_thr * M_PI / 180.0)) {}
 
 bool two_view_triangulator::triangulate(const unsigned idx_1, const unsigned int idx_2, Vec3_t& pos_w) const {
     const auto& keypt_1 = keyfrm_1_->frm_obs_.undist_keypts_.at(idx_1);
-    const float keypt_1_x_right = keyfrm_1_->frm_obs_.stereo_x_right_.at(idx_1);
+    const float keypt_1_x_right = keyfrm_1_->frm_obs_.stereo_x_right_.empty() ? -1.0f : keyfrm_1_->frm_obs_.stereo_x_right_.at(idx_1);
     const bool is_stereo_1 = 0 <= keypt_1_x_right;
 
     const auto& keypt_2 = keyfrm_2_->frm_obs_.undist_keypts_.at(idx_2);
-    const float keypt_2_x_right = keyfrm_2_->frm_obs_.stereo_x_right_.at(idx_2);
+    const float keypt_2_x_right = keyfrm_2_->frm_obs_.stereo_x_right_.empty() ? -1.0f : keyfrm_2_->frm_obs_.stereo_x_right_.at(idx_2);
     const bool is_stereo_2 = 0 <= keypt_2_x_right;
 
     // rays with reference of each camera
@@ -33,11 +33,13 @@ bool two_view_triangulator::triangulate(const unsigned idx_1, const unsigned int
     const auto cos_rays_parallax = ray_w_1.dot(ray_w_2);
 
     // compute the stereo parallax if the keypoint is observed as stereo
+    const float depth_1 = keyfrm_1_->frm_obs_.depths_.empty() ? -1.0f : keyfrm_1_->frm_obs_.depths_.at(idx_1);
     const auto cos_stereo_parallax_1 = is_stereo_1
-                                           ? std::cos(2.0 * atan2(camera_1_->true_baseline_ / 2.0, keyfrm_1_->frm_obs_.depths_.at(idx_1)))
+                                           ? std::cos(2.0 * atan2(camera_1_->true_baseline_ / 2.0, depth_1))
                                            : 2.0;
+    const float depth_2 = keyfrm_2_->frm_obs_.depths_.empty() ? -1.0f : keyfrm_2_->frm_obs_.depths_.at(idx_2);
     const auto cos_stereo_parallax_2 = is_stereo_2
-                                           ? std::cos(2.0 * atan2(camera_2_->true_baseline_ / 2.0, keyfrm_2_->frm_obs_.depths_.at(idx_2)))
+                                           ? std::cos(2.0 * atan2(camera_2_->true_baseline_ / 2.0, depth_2))
                                            : 2.0;
     const auto cos_stereo_parallax = std::min(cos_stereo_parallax_1, cos_stereo_parallax_2);
 

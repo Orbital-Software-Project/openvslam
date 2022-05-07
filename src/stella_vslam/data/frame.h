@@ -13,7 +13,6 @@
 #include <atomic>
 #include <memory>
 
-#include <opencv2/core.hpp>
 #include <Eigen/Core>
 
 #ifdef USE_DBOW2
@@ -62,42 +61,65 @@ public:
 
     /**
      * Set camera pose and refresh rotation and translation
-     * @param cam_pose_cw
+     * @param pose_cw
      */
-    void set_cam_pose(const Mat44_t& cam_pose_cw);
+    void set_pose_cw(const Mat44_t& pose_cw);
 
     /**
      * Set camera pose and refresh rotation and translation
-     * @param cam_pose_cw
+     * @param pose_cw
      */
-    void set_cam_pose(const g2o::SE3Quat& cam_pose_cw);
+    void set_pose_cw(const g2o::SE3Quat& pose_cw);
 
     /**
      * Get camera pose
      */
-    Mat44_t get_cam_pose() const;
+    Mat44_t get_pose_cw() const;
 
     /**
      * Get the inverse of the camera pose
      */
-    Mat44_t get_cam_pose_inv() const;
-
-    /**
-     * Update rotation and translation using cam_pose_cw_
-     */
-    void update_pose_params();
+    Mat44_t get_pose_wc() const;
 
     /**
      * Get camera center
      * @return
      */
-    Vec3_t get_cam_center() const;
+    Vec3_t get_trans_wc() const;
 
     /**
      * Get inverse of rotation
      * @return
      */
-    Mat33_t get_rotation_inv() const;
+    Mat33_t get_rot_wc() const;
+
+    /**
+     * Get the translation of the camera pose
+     */
+    Vec3_t get_trans_cw() const {
+        return trans_cw_;
+    }
+
+    /**
+     * Get the rotation of the camera pose
+     */
+    Mat33_t get_rot_cw() const {
+        return rot_cw_;
+    }
+
+    /**
+     * Invalidate pose
+     */
+    void invalidate_pose() {
+        pose_is_valid_ = false;
+    }
+
+    /**
+     * Return true if pose is valid
+     */
+    bool pose_is_valid() const {
+        return pose_is_valid_;
+    }
 
     /**
      * Returns true if BoW has been computed.
@@ -155,25 +177,20 @@ public:
     std::unordered_map<unsigned int, marker2d> markers_2d_;
 
     //! BoW features (DBoW2 or FBoW)
-#ifdef USE_DBOW2
-    DBoW2::BowVector bow_vec_;
-    DBoW2::FeatureVector bow_feat_vec_;
-#else
-    fbow::BoWVector bow_vec_;
-    fbow::BoWFeatVector bow_feat_vec_;
-#endif
+    bow_vector bow_vec_;
+    bow_feature_vector bow_feat_vec_;
 
     //! landmarks, whose nullptr indicates no-association
     std::vector<std::shared_ptr<landmark>> landmarks_;
-
-    //! camera pose: world -> camera
-    bool cam_pose_cw_is_valid_ = false;
-    Mat44_t cam_pose_cw_;
 
     //! reference keyframe for tracking
     std::shared_ptr<keyframe> ref_keyfrm_ = nullptr;
 
 private:
+    //! camera pose: world -> camera
+    bool pose_is_valid_ = false;
+    Mat44_t pose_cw_;
+
     //! Camera pose
     //! rotation: world -> camera
     Mat33_t rot_cw_;
@@ -182,7 +199,7 @@ private:
     //! rotation: camera -> world
     Mat33_t rot_wc_;
     //! translation: camera -> world
-    Vec3_t cam_center_;
+    Vec3_t trans_wc_;
 };
 
 } // namespace data

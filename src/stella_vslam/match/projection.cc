@@ -1,5 +1,7 @@
 #include "stella_vslam/camera/base.h"
+#include "stella_vslam/data/common.h"
 #include "stella_vslam/data/frame.h"
+#include "stella_vslam/data/frame_observation.h"
 #include "stella_vslam/data/keyframe.h"
 #include "stella_vslam/data/landmark.h"
 #include "stella_vslam/match/projection.h"
@@ -49,7 +51,7 @@ unsigned int projection::match_frame_and_landmarks(data::frame& frm,
                 continue;
             }
 
-            if (0 < frm.frm_obs_.stereo_x_right_.at(idx)) {
+            if (!frm.frm_obs_.stereo_x_right_.empty() && 0 < frm.frm_obs_.stereo_x_right_.at(idx)) {
                 const auto reproj_error = std::abs(lm_to_x_right.at(local_lm->id_) - frm.frm_obs_.stereo_x_right_.at(idx));
                 if (margin * frm.orb_params_->scale_factors_.at(pred_scale_level) < reproj_error) {
                     continue;
@@ -93,13 +95,13 @@ unsigned int projection::match_current_and_last_frames(data::frame& curr_frm, co
 
     angle_checker<int> angle_checker;
 
-    const Mat33_t rot_cw = curr_frm.cam_pose_cw_.block<3, 3>(0, 0);
-    const Vec3_t trans_cw = curr_frm.cam_pose_cw_.block<3, 1>(0, 3);
+    const Mat33_t rot_cw = curr_frm.get_rot_cw();
+    const Vec3_t trans_cw = curr_frm.get_trans_cw();
 
     const Vec3_t trans_wc = -rot_cw.transpose() * trans_cw;
 
-    const Mat33_t rot_lw = last_frm.cam_pose_cw_.block<3, 3>(0, 0);
-    const Vec3_t trans_lw = last_frm.cam_pose_cw_.block<3, 1>(0, 3);
+    const Mat33_t rot_lw = last_frm.get_rot_cw();
+    const Vec3_t trans_lw = last_frm.get_trans_cw();
 
     const Vec3_t trans_lc = rot_lw * trans_wc + trans_lw;
 
@@ -135,7 +137,7 @@ unsigned int projection::match_current_and_last_frames(data::frame& curr_frm, co
         }
 
         // Acquire keypoints in the cell where the reprojected 3D points exist
-        const auto last_scale_level = last_frm.frm_obs_.keypts_.at(idx_last).octave;
+        const auto last_scale_level = last_frm.frm_obs_.undist_keypts_.at(idx_last).octave;
         int min_level;
         int max_level;
         if (assume_forward) {
@@ -167,7 +169,7 @@ unsigned int projection::match_current_and_last_frames(data::frame& curr_frm, co
                 continue;
             }
 
-            if (curr_frm.frm_obs_.stereo_x_right_.at(curr_idx) > 0) {
+            if (!curr_frm.frm_obs_.stereo_x_right_.empty() && curr_frm.frm_obs_.stereo_x_right_.at(curr_idx) > 0) {
                 const float reproj_error = std::fabs(x_right - curr_frm.frm_obs_.stereo_x_right_.at(curr_idx));
                 if (margin * curr_frm.orb_params_->scale_factors_.at(last_scale_level) < reproj_error) {
                     continue;
@@ -212,12 +214,23 @@ unsigned int projection::match_current_and_last_frames(data::frame& curr_frm, co
 
 unsigned int projection::match_frame_and_keyframe(data::frame& curr_frm, const std::shared_ptr<data::keyframe>& keyfrm, const std::set<std::shared_ptr<data::landmark>>& already_matched_lms,
                                                   const float margin, const unsigned int hamm_dist_thr) const {
+    return match_frame_and_keyframe(curr_frm.get_pose_cw(), curr_frm.camera_, curr_frm.frm_obs_, curr_frm.orb_params_, curr_frm.landmarks_, keyfrm, already_matched_lms, margin, hamm_dist_thr);
+}
+
+unsigned int projection::match_frame_and_keyframe(const Mat44_t& cam_pose_cw,
+                                                  const camera::base* camera,
+                                                  const data::frame_observation& frm_obs,
+                                                  const feature::orb_params* orb_params,
+                                                  std::vector<std::shared_ptr<data::landmark>>& frm_landmarks,
+                                                  const std::shared_ptr<data::keyframe>& keyfrm,
+                                                  const std::set<std::shared_ptr<data::landmark>>& already_matched_lms,
+                                                  const float margin, const unsigned int hamm_dist_thr) const {
     unsigned int num_matches = 0;
 
     angle_checker<int> angle_checker;
 
-    const Mat33_t rot_cw = curr_frm.cam_pose_cw_.block<3, 3>(0, 0);
-    const Vec3_t trans_cw = curr_frm.cam_pose_cw_.block<3, 1>(0, 3);
+    const Mat33_t rot_cw = cam_pose_cw.block<3, 3>(0, 0);
+    const Vec3_t trans_cw = cam_pose_cw.block<3, 1>(0, 3);
     const Vec3_t cam_center = -rot_cw.transpose() * trans_cw;
 
     const auto landmarks = keyfrm->get_landmarks();
@@ -243,7 +256,7 @@ unsigned int projection::match_frame_and_keyframe(data::frame& curr_frm, const s
         // Reproject and compute visibility
         Vec2_t reproj;
         float x_right;
-        const bool in_image = curr_frm.camera_->reproject_to_image(rot_cw, trans_cw, pos_w, reproj, x_right);
+        const bool in_image = camera->reproject_to_image(rot_cw, trans_cw, pos_w, reproj, x_right);
 
         // Ignore if it is reprojected outside the image
         if (!in_image) {
@@ -253,19 +266,21 @@ unsigned int projection::match_frame_and_keyframe(data::frame& curr_frm, const s
         // Check if it's within ORB scale levels
         const Vec3_t cam_to_lm_vec = pos_w - cam_center;
         const auto cam_to_lm_dist = cam_to_lm_vec.norm();
-        const auto max_cam_to_lm_dist = lm->get_max_valid_distance();
-        const auto min_cam_to_lm_dist = lm->get_min_valid_distance();
+        constexpr auto margin_far = 1.3;
+        constexpr auto margin_near = 1.0 / margin_far;
+        const auto max_cam_to_lm_dist = margin_far * lm->get_max_valid_distance();
+        const auto min_cam_to_lm_dist = margin_near * lm->get_min_valid_distance();
 
         if (cam_to_lm_dist < min_cam_to_lm_dist || max_cam_to_lm_dist < cam_to_lm_dist) {
             continue;
         }
 
         // Acquire keypoints in the cell where the reprojected 3D points exist
-        const auto pred_scale_level = lm->predict_scale_level(cam_to_lm_dist, curr_frm.orb_params_->num_levels_, curr_frm.orb_params_->log_scale_factor_);
+        const auto pred_scale_level = lm->predict_scale_level(cam_to_lm_dist, orb_params->num_levels_, orb_params->log_scale_factor_);
 
-        const auto indices = curr_frm.get_keypoints_in_cell(reproj(0), reproj(1),
-                                                            margin * curr_frm.orb_params_->scale_factors_.at(pred_scale_level),
-                                                            pred_scale_level - 1, pred_scale_level + 1);
+        const auto indices = data::get_keypoints_in_cell(camera, frm_obs, reproj(0), reproj(1),
+                                                         margin * orb_params->scale_factors_.at(pred_scale_level),
+                                                         pred_scale_level - 1, pred_scale_level + 1);
 
         if (indices.empty()) {
             continue;
@@ -277,11 +292,11 @@ unsigned int projection::match_frame_and_keyframe(data::frame& curr_frm, const s
         int best_idx = -1;
 
         for (unsigned long curr_idx : indices) {
-            if (curr_frm.landmarks_.at(curr_idx)) {
+            if (frm_landmarks.at(curr_idx)) {
                 continue;
             }
 
-            const auto& desc = curr_frm.frm_obs_.descriptors_.row(curr_idx);
+            const auto& desc = frm_obs.descriptors_.row(curr_idx);
 
             const auto hamm_dist = compute_descriptor_distance_32(lm_desc, desc);
 
@@ -296,12 +311,12 @@ unsigned int projection::match_frame_and_keyframe(data::frame& curr_frm, const s
         }
 
         // The matching is valid
-        curr_frm.landmarks_.at(best_idx) = lm;
+        frm_landmarks.at(best_idx) = lm;
         num_matches++;
 
         if (check_orientation_) {
             const auto delta_angle
-                = keyfrm->frm_obs_.undist_keypts_.at(idx).angle - curr_frm.frm_obs_.undist_keypts_.at(best_idx).angle;
+                = keyfrm->frm_obs_.undist_keypts_.at(idx).angle - frm_obs.undist_keypts_.at(best_idx).angle;
             angle_checker.append_delta_angle(delta_angle, best_idx);
         }
     }
@@ -309,7 +324,7 @@ unsigned int projection::match_frame_and_keyframe(data::frame& curr_frm, const s
     if (check_orientation_) {
         const auto invalid_matches = angle_checker.get_invalid_matches();
         for (const auto invalid_idx : invalid_matches) {
-            curr_frm.landmarks_.at(invalid_idx) = nullptr;
+            frm_landmarks.at(invalid_idx) = nullptr;
             --num_matches;
         }
     }
@@ -355,8 +370,10 @@ unsigned int projection::match_by_Sim3_transform(const std::shared_ptr<data::key
         // Check if it's within ORB scale levels
         const Vec3_t cam_to_lm_vec = pos_w - cam_center;
         const auto cam_to_lm_dist = cam_to_lm_vec.norm();
-        const auto max_cam_to_lm_dist = lm->get_max_valid_distance();
-        const auto min_cam_to_lm_dist = lm->get_min_valid_distance();
+        constexpr auto margin_far = 1.3;
+        constexpr auto margin_near = 1.0 / margin_far;
+        const auto max_cam_to_lm_dist = margin_far * lm->get_max_valid_distance();
+        const auto min_cam_to_lm_dist = margin_near * lm->get_min_valid_distance();
 
         if (cam_to_lm_dist < min_cam_to_lm_dist || max_cam_to_lm_dist < cam_to_lm_dist) {
             continue;
@@ -389,7 +406,7 @@ unsigned int projection::match_by_Sim3_transform(const std::shared_ptr<data::key
                 continue;
             }
 
-            const auto scale_level = static_cast<unsigned int>(keyfrm->frm_obs_.keypts_.at(idx).octave);
+            const auto scale_level = static_cast<unsigned int>(keyfrm->frm_obs_.undist_keypts_.at(idx).octave);
 
             // TODO: should determine the scale with 'keyfrm-> get_keypts_in_cell ()'
             if (scale_level < pred_scale_level - 1 || pred_scale_level < scale_level) {
@@ -420,12 +437,12 @@ unsigned int projection::match_by_Sim3_transform(const std::shared_ptr<data::key
 unsigned int projection::match_keyframes_mutually(const std::shared_ptr<data::keyframe>& keyfrm_1, const std::shared_ptr<data::keyframe>& keyfrm_2, std::vector<std::shared_ptr<data::landmark>>& matched_lms_in_keyfrm_1,
                                                   const float& s_12, const Mat33_t& rot_12, const Vec3_t& trans_12, const float margin) const {
     // The pose of keyframe 1
-    const Mat33_t rot_1w = keyfrm_1->get_rotation();
-    const Vec3_t trans_1w = keyfrm_1->get_translation();
+    const Mat33_t rot_1w = keyfrm_1->get_rot_cw();
+    const Vec3_t trans_1w = keyfrm_1->get_trans_cw();
 
     // The pose of keyframe 2
-    const Mat33_t rot_2w = keyfrm_2->get_rotation();
-    const Vec3_t trans_2w = keyfrm_2->get_translation();
+    const Mat33_t rot_2w = keyfrm_2->get_rot_cw();
+    const Vec3_t trans_2w = keyfrm_2->get_trans_cw();
 
     // Compute the similarity transformation between the keyframes 1 and 2
     const Mat33_t s_rot_12 = s_12 * rot_12;
@@ -491,8 +508,10 @@ unsigned int projection::match_keyframes_mutually(const std::shared_ptr<data::ke
 
             // Check if it's within ORB scale levels
             const auto cam_to_lm_dist = pos_2.norm();
-            const auto max_cam_to_lm_dist = lm->get_max_valid_distance();
-            const auto min_cam_to_lm_dist = lm->get_min_valid_distance();
+            constexpr auto margin_far = 1.3;
+            constexpr auto margin_near = 1.0 / margin_far;
+            const auto max_cam_to_lm_dist = margin_far * lm->get_max_valid_distance();
+            const auto min_cam_to_lm_dist = margin_near * lm->get_min_valid_distance();
 
             if (cam_to_lm_dist < min_cam_to_lm_dist || max_cam_to_lm_dist < cam_to_lm_dist) {
                 continue;
@@ -513,7 +532,7 @@ unsigned int projection::match_keyframes_mutually(const std::shared_ptr<data::ke
             int best_idx_2 = -1;
 
             for (const auto idx_2 : indices) {
-                const auto scale_level = static_cast<unsigned int>(keyfrm_2->frm_obs_.keypts_.at(idx_2).octave);
+                const auto scale_level = static_cast<unsigned int>(keyfrm_2->frm_obs_.undist_keypts_.at(idx_2).octave);
 
                 // TODO: should determine the scale with 'keyfrm-> get_keypts_in_cell ()'
                 if (scale_level < pred_scale_level - 1 || pred_scale_level < scale_level) {
@@ -573,8 +592,10 @@ unsigned int projection::match_keyframes_mutually(const std::shared_ptr<data::ke
 
             // Check if it's within ORB scale levels
             const auto cam_to_lm_dist = pos_1.norm();
-            const auto max_cam_to_lm_dist = lm->get_max_valid_distance();
-            const auto min_cam_to_lm_dist = lm->get_min_valid_distance();
+            constexpr auto margin_far = 1.3;
+            constexpr auto margin_near = 1.0 / margin_far;
+            const auto max_cam_to_lm_dist = margin_far * lm->get_max_valid_distance();
+            const auto min_cam_to_lm_dist = margin_near * lm->get_min_valid_distance();
 
             if (cam_to_lm_dist < min_cam_to_lm_dist || max_cam_to_lm_dist < cam_to_lm_dist) {
                 continue;
@@ -596,7 +617,7 @@ unsigned int projection::match_keyframes_mutually(const std::shared_ptr<data::ke
             int best_idx_1 = -1;
 
             for (const auto idx_1 : indices) {
-                const auto scale_level = static_cast<unsigned int>(keyfrm_1->frm_obs_.keypts_.at(idx_1).octave);
+                const auto scale_level = static_cast<unsigned int>(keyfrm_1->frm_obs_.undist_keypts_.at(idx_1).octave);
 
                 // TODO: should determine the scale with 'keyfrm-> get_keypts_in_cell ()'
                 if (scale_level < pred_scale_level - 1 || pred_scale_level < scale_level) {

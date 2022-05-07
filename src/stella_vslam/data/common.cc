@@ -1,4 +1,9 @@
 #include "stella_vslam/data/common.h"
+#include "stella_vslam/data/frame_observation.h"
+#include "stella_vslam/camera/perspective.h"
+#include "stella_vslam/camera/fisheye.h"
+#include "stella_vslam/camera/equirectangular.h"
+#include "stella_vslam/camera/radial_division.h"
 
 #include <nlohmann/json.hpp>
 
@@ -94,7 +99,7 @@ cv::Mat convert_json_to_descriptors(const nlohmann::json& json_descriptors) {
     return descriptors;
 }
 
-void assign_keypoints_to_grid(camera::base* camera, const std::vector<cv::KeyPoint>& undist_keypts,
+void assign_keypoints_to_grid(const camera::base* camera, const std::vector<cv::KeyPoint>& undist_keypts,
                               std::vector<std::vector<std::vector<unsigned int>>>& keypt_indices_in_cells) {
     // Pre-allocate memory
     const unsigned int num_keypts = undist_keypts.size();
@@ -117,14 +122,20 @@ void assign_keypoints_to_grid(camera::base* camera, const std::vector<cv::KeyPoi
     }
 }
 
-auto assign_keypoints_to_grid(camera::base* camera, const std::vector<cv::KeyPoint>& undist_keypts)
+auto assign_keypoints_to_grid(const camera::base* camera, const std::vector<cv::KeyPoint>& undist_keypts)
     -> std::vector<std::vector<std::vector<unsigned int>>> {
     std::vector<std::vector<std::vector<unsigned int>>> keypt_indices_in_cells;
     assign_keypoints_to_grid(camera, undist_keypts, keypt_indices_in_cells);
     return keypt_indices_in_cells;
 }
 
-std::vector<unsigned int> get_keypoints_in_cell(camera::base* camera, const std::vector<cv::KeyPoint>& undist_keypts,
+std::vector<unsigned int> get_keypoints_in_cell(const camera::base* camera, const data::frame_observation& frm_obs,
+                                                const float ref_x, const float ref_y, const float margin,
+                                                const int min_level, const int max_level) {
+    return get_keypoints_in_cell(camera, frm_obs.undist_keypts_, frm_obs.keypt_indices_in_cells_, ref_x, ref_y, margin, min_level, max_level);
+}
+
+std::vector<unsigned int> get_keypoints_in_cell(const camera::base* camera, const std::vector<cv::KeyPoint>& undist_keypts,
                                                 const std::vector<std::vector<std::vector<unsigned int>>>& keypt_indices_in_cells,
                                                 const float ref_x, const float ref_y, const float margin,
                                                 const int min_level, const int max_level) {
@@ -183,6 +194,76 @@ std::vector<unsigned int> get_keypoints_in_cell(camera::base* camera, const std:
     }
 
     return indices;
+}
+
+Vec3_t triangulate_stereo(const camera::base* camera,
+                          const Mat33_t& rot_wc,
+                          const Vec3_t& trans_wc,
+                          const frame_observation& frm_obs,
+                          const unsigned int idx) {
+    assert(camera->setup_type_ != camera::setup_type_t::Monocular);
+
+    switch (camera->model_type_) {
+        case camera::model_type_t::Perspective: {
+            auto perspective_camera = static_cast<const camera::perspective*>(camera);
+
+            const float depth = frm_obs.depths_.empty() ? -1.0f : frm_obs.depths_.at(idx);
+            if (0.0 < depth) {
+                const float x = frm_obs.undist_keypts_.at(idx).pt.x;
+                const float y = frm_obs.undist_keypts_.at(idx).pt.y;
+                const float unproj_x = (x - perspective_camera->cx_) * depth * perspective_camera->fx_inv_;
+                const float unproj_y = (y - perspective_camera->cy_) * depth * perspective_camera->fy_inv_;
+                const Vec3_t pos_c{unproj_x, unproj_y, depth};
+
+                // Convert from camera coordinates to world coordinates
+                return rot_wc * pos_c + trans_wc;
+            }
+            else {
+                return Vec3_t::Zero();
+            }
+        }
+        case camera::model_type_t::Fisheye: {
+            auto fisheye_camera = static_cast<const camera::fisheye*>(camera);
+
+            const float depth = frm_obs.depths_.empty() ? -1.0f : frm_obs.depths_.at(idx);
+            if (0.0 < depth) {
+                const float x = frm_obs.undist_keypts_.at(idx).pt.x;
+                const float y = frm_obs.undist_keypts_.at(idx).pt.y;
+                const float unproj_x = (x - fisheye_camera->cx_) * depth * fisheye_camera->fx_inv_;
+                const float unproj_y = (y - fisheye_camera->cy_) * depth * fisheye_camera->fy_inv_;
+                const Vec3_t pos_c{unproj_x, unproj_y, depth};
+
+                // Convert from camera coordinates to world coordinates
+                return rot_wc * pos_c + trans_wc;
+            }
+            else {
+                return Vec3_t::Zero();
+            }
+        }
+        case camera::model_type_t::Equirectangular: {
+            throw std::runtime_error("Not implemented: Stereo or RGBD of equirectangular camera model");
+        }
+        case camera::model_type_t::RadialDivision: {
+            auto radial_division_camera = static_cast<const camera::radial_division*>(camera);
+
+            const float depth = frm_obs.depths_.empty() ? -1.0f : frm_obs.depths_.at(idx);
+            if (0.0 < depth) {
+                const float x = frm_obs.undist_keypts_.at(idx).pt.x;
+                const float y = frm_obs.undist_keypts_.at(idx).pt.y;
+                const float unproj_x = (x - radial_division_camera->cx_) * depth * radial_division_camera->fx_inv_;
+                const float unproj_y = (y - radial_division_camera->cy_) * depth * radial_division_camera->fy_inv_;
+                const Vec3_t pos_c{unproj_x, unproj_y, depth};
+
+                // Convert from camera coordinates to world coordinates
+                return rot_wc * pos_c + trans_wc;
+            }
+            else {
+                return Vec3_t::Zero();
+            }
+        }
+    }
+
+    return Vec3_t::Zero();
 }
 
 } // namespace data

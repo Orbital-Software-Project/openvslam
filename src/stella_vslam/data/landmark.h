@@ -8,7 +8,7 @@
 #include <atomic>
 #include <memory>
 
-#include <opencv2/core/core.hpp>
+#include <opencv2/core/mat.hpp>
 #include <nlohmann/json_fwd.hpp>
 
 namespace stella_vslam {
@@ -131,7 +131,7 @@ private:
     unsigned int num_observed_ = 1;
 
     //! this landmark will be erased shortly or not
-    bool will_be_erased_ = false;
+    std::atomic<bool> will_be_erased_{false};
 
     //! replace this landmark with below
     std::shared_ptr<landmark> replaced_ = nullptr;

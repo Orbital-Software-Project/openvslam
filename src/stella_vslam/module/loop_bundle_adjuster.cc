@@ -19,11 +19,6 @@ void loop_bundle_adjuster::set_mapping_module(mapping_module* mapper) {
     mapper_ = mapper;
 }
 
-void loop_bundle_adjuster::count_loop_BA_execution() {
-    std::lock_guard<std::mutex> lock(mtx_thread_);
-    ++num_exec_loop_BA_;
-}
-
 void loop_bundle_adjuster::abort() {
     std::lock_guard<std::mutex> lock(mtx_thread_);
     abort_loop_BA_ = true;
@@ -37,12 +32,10 @@ bool loop_bundle_adjuster::is_running() const {
 void loop_bundle_adjuster::optimize() {
     spdlog::info("start loop bundle adjustment");
 
-    unsigned int num_exec_loop_BA = 0;
     {
         std::lock_guard<std::mutex> lock(mtx_thread_);
         loop_BA_is_running_ = true;
         abort_loop_BA_ = false;
-        num_exec_loop_BA = num_exec_loop_BA_;
     }
 
     std::unordered_set<unsigned int> optimized_keyfrm_ids;
@@ -50,16 +43,15 @@ void loop_bundle_adjuster::optimize() {
     eigen_alloc_unord_map<unsigned int, Vec3_t> lm_to_pos_w_after_global_BA;
     eigen_alloc_unord_map<unsigned int, Mat44_t> keyfrm_to_pose_cw_after_global_BA;
     const auto global_BA = optimize::global_bundle_adjuster(map_db_, num_iter_, false);
-    global_BA.optimize(optimized_keyfrm_ids, optimized_landmark_ids,
-                       lm_to_pos_w_after_global_BA,
-                       keyfrm_to_pose_cw_after_global_BA, &abort_loop_BA_);
+    bool ok = global_BA.optimize(optimized_keyfrm_ids, optimized_landmark_ids,
+                                 lm_to_pos_w_after_global_BA,
+                                 keyfrm_to_pose_cw_after_global_BA, &abort_loop_BA_);
 
     {
         std::lock_guard<std::mutex> lock1(mtx_thread_);
 
-        // if count_loop_BA_execution() was called during the loop BA or the loop BA was aborted,
-        // cannot update the map
-        if (num_exec_loop_BA != num_exec_loop_BA_ || abort_loop_BA_) {
+        // if the loop BA was aborted, cannot update the map
+        if (!ok) {
             spdlog::info("abort loop bundle adjustment");
             loop_BA_is_running_ = false;
             abort_loop_BA_ = false;
@@ -85,7 +77,7 @@ void loop_bundle_adjuster::optimize() {
         keyfrms_to_check.push_back(map_db_->origin_keyfrm_);
         while (!keyfrms_to_check.empty()) {
             auto parent = keyfrms_to_check.front();
-            const Mat44_t cam_pose_wp = parent->get_cam_pose_inv();
+            const Mat44_t cam_pose_wp = parent->get_pose_wc();
 
             const auto children = parent->graph_node_->get_spanning_children();
             for (auto child : children) {
@@ -94,7 +86,7 @@ void loop_bundle_adjuster::optimize() {
                     // propagate the pose correction from the spanning parent
 
                     // parent->child
-                    const Mat44_t cam_pose_cp = child->get_cam_pose() * cam_pose_wp;
+                    const Mat44_t cam_pose_cp = child->get_pose_cw() * cam_pose_wp;
                     // world->child AFTER correction = parent->child * world->parent AFTER correction
                     keyfrm_to_pose_cw_after_global_BA[child->id_] = cam_pose_cp * keyfrm_to_pose_cw_after_global_BA.at(parent->id_);
                     // check as `child` has been corrected
@@ -106,9 +98,9 @@ void loop_bundle_adjuster::optimize() {
             }
 
             // temporally store the camera pose BEFORE correction (for correction of landmark positions)
-            keyfrm_to_cam_pose_cw_before_BA[parent->id_] = parent->get_cam_pose();
+            keyfrm_to_cam_pose_cw_before_BA[parent->id_] = parent->get_pose_cw();
             // update the camera pose
-            parent->set_cam_pose(keyfrm_to_pose_cw_after_global_BA.at(parent->id_));
+            parent->set_pose_cw(keyfrm_to_pose_cw_after_global_BA.at(parent->id_));
             // finish updating
             keyfrms_to_check.pop_front();
         }
@@ -141,7 +133,7 @@ void loop_bundle_adjuster::optimize() {
                 const Vec3_t pos_c = rot_cw_before_BA * lm->get_pos_in_world() + trans_cw_before_BA;
 
                 // convert the position to the world-reference using the camera pose AFTER the correction
-                const Mat44_t cam_pose_wc = ref_keyfrm->get_cam_pose_inv();
+                const Mat44_t cam_pose_wc = ref_keyfrm->get_pose_wc();
                 const Mat33_t rot_wc = cam_pose_wc.block<3, 3>(0, 0);
                 const Vec3_t trans_wc = cam_pose_wc.block<3, 1>(0, 3);
                 lm->set_pos_in_world(rot_wc * pos_c + trans_wc);

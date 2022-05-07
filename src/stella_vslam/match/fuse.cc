@@ -50,8 +50,10 @@ unsigned int fuse::detect_duplication(const std::shared_ptr<data::keyframe>& key
         // Check if it's within ORB scale levels
         const Vec3_t cam_to_lm_vec = pos_w - cam_center;
         const auto cam_to_lm_dist = cam_to_lm_vec.norm();
-        const auto max_cam_to_lm_dist = lm->get_max_valid_distance();
-        const auto min_cam_to_lm_dist = lm->get_min_valid_distance();
+        const auto margin_far = 1.3;
+        const auto margin_near = 1.0 / margin_far;
+        const auto max_cam_to_lm_dist = margin_far * lm->get_max_valid_distance();
+        const auto min_cam_to_lm_dist = margin_near * lm->get_min_valid_distance();
 
         if (cam_to_lm_dist < min_cam_to_lm_dist || max_cam_to_lm_dist < cam_to_lm_dist) {
             continue;
@@ -80,7 +82,7 @@ unsigned int fuse::detect_duplication(const std::shared_ptr<data::keyframe>& key
         int best_idx = -1;
 
         for (const auto idx : indices) {
-            const auto scale_level = keyfrm->frm_obs_.keypts_.at(idx).octave;
+            const auto scale_level = keyfrm->frm_obs_.undist_keypts_.at(idx).octave;
 
             // TODO: shoud determine the scale with 'keyfrm-> get_keypts_in_cell ()'
             if (scale_level < pred_scale_level - 1 || pred_scale_level < scale_level) {
@@ -127,9 +129,9 @@ unsigned int fuse::replace_duplication(data::map_database* map_db,
                                        const std::shared_ptr<data::keyframe>& keyfrm, const T& landmarks_to_check, const float margin) {
     unsigned int num_fused = 0;
 
-    const Mat33_t rot_cw = keyfrm->get_rotation();
-    const Vec3_t trans_cw = keyfrm->get_translation();
-    const Vec3_t cam_center = keyfrm->get_cam_center();
+    const Mat33_t rot_cw = keyfrm->get_rot_cw();
+    const Vec3_t trans_cw = keyfrm->get_trans_cw();
+    const Vec3_t cam_center = keyfrm->get_trans_wc();
 
     for (const auto& lm : landmarks_to_check) {
         if (!lm) {
@@ -158,8 +160,10 @@ unsigned int fuse::replace_duplication(data::map_database* map_db,
         // Check if it's within ORB scale levels
         const Vec3_t cam_to_lm_vec = pos_w - cam_center;
         const auto cam_to_lm_dist = cam_to_lm_vec.norm();
-        const auto max_cam_to_lm_dist = lm->get_max_valid_distance();
-        const auto min_cam_to_lm_dist = lm->get_min_valid_distance();
+        const auto margin_far = 1.3;
+        const auto margin_near = 1.0 / margin_far;
+        const auto max_cam_to_lm_dist = margin_far * lm->get_max_valid_distance();
+        const auto min_cam_to_lm_dist = margin_near * lm->get_min_valid_distance();
 
         if (cam_to_lm_dist < min_cam_to_lm_dist || max_cam_to_lm_dist < cam_to_lm_dist) {
             continue;
@@ -197,7 +201,7 @@ unsigned int fuse::replace_duplication(data::map_database* map_db,
                 continue;
             }
 
-            if (keyfrm->frm_obs_.stereo_x_right_.at(idx) >= 0) {
+            if (!keyfrm->frm_obs_.stereo_x_right_.empty() && keyfrm->frm_obs_.stereo_x_right_.at(idx) >= 0) {
                 // Compute reprojection error with 3 degrees of freedom if a stereo match exists
                 const auto e_x = reproj(0) - keypt.pt.x;
                 const auto e_y = reproj(1) - keypt.pt.y;
